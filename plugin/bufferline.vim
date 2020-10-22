@@ -9,6 +9,7 @@ augroup bufferline
     au!
     au BufReadPost,BufNewFile * call <SID>on_buffer_open(expand('<abuf>'))
     au BufDelete              * call <SID>on_buffer_close(expand('<abuf>'))
+    au BufEnter,BufLeave,BufDelete * call bufferline#update()
 augroup END
 
 
@@ -22,14 +23,6 @@ command!          -bang BufferMoveNext      call s:move_current_buffer(+1)
 command!          -bang BufferMovePrevious  call s:move_current_buffer(-1)
 
 command!          -bang BufferPick          call bufferline#pick_buffer()
-
-"=================
-" Section: Options
-"=================
-
-let bufferline = extend({
-\ 'shadow': v:true,
-\}, get(g:, 'bufferline', {}))
 
 "==========================
 " Section: Bufferline state
@@ -60,7 +53,6 @@ function s:setup_hl()
    hi default link BufferInactiveMod  TabLine
    hi default link BufferInactiveSign TabLine
    exe 'hi default BufferInactiveTarget   guifg=red gui=bold guibg=' . bg_inactive
-   hi BufferShadow guifg=#ffffff guibg=#000000
 endfunc
 
 call s:setup_hl()
@@ -73,9 +65,9 @@ let s:is_picking_buffer = v:false
 
 " Default icons
 let g:icons = extend(get(g:, 'icons', {}), #{
-\ bufferline_separator_active:   '▎',
-\ bufferline_separator_inactive: '▎',
-\})
+         \  bufferline_separator_active:   '',
+         \  bufferline_separator_inactive: '',
+         \ })
 
 
 "===================================
@@ -83,7 +75,7 @@ let g:icons = extend(get(g:, 'icons', {}), #{
 "===================================
 
 " Constants
-let s:LETTERS = 'asdfjkl;ghnmxcbziowerutyqpASDFJKLGHNMXCBZIOWERUTYQP'
+let s:LETTERS = 'aoeuidhtns1234567890'
 let s:INDEX_BY_LETTER = {}
 
 let s:letter_status = map(range(len(s:LETTERS)), {-> 0})
@@ -114,9 +106,18 @@ function! bufferline#update ()
 endfu
 
 function! bufferline#render ()
+   let buffers = s:get_updated_buffers()
+
+   if (len(buffers) < 2)
+      set showtabline=0
+      return
+   endif
+
+   set showtabline=2
+
    let bufferNames = {}
    let bufferDetails = map(
-      \ copy(s:get_updated_buffers()),
+      \ copy(buffers),
       \ {k, number -> { 'number': 0+number, 'name': s:get_buffer_name(number) }})
 
    for i in range(len(bufferDetails))
@@ -144,12 +145,26 @@ function! bufferline#render ()
 
    for i in range(len(bufferDetails))
       let buffer = bufferDetails[i]
-      let type = buf#activity(0+buffer.number)
+
+      let type = 0
+
+      if type(0+buffer.number) == type(1)
+         let num = 0+buffer.number
+      else
+         let num = bufnr(0+buffer.number) 
+      end
+
+      if bufnr('%') == num
+         let type = 2 
+      elseif bufwinnr(num) != -1
+         let type = 1 
+      endif
+
       let is_visible = type == 1
       let is_current = currentnr == buffer.number
 
       let status = s:hl_status[type]
-      let mod = buf#modified(0+buffer.number) ? 'Mod' : ''
+      let mod = getbufvar(0+buffer.number, '&modified') ? 'Mod' : ''
 
       let namePrefix = s:hl('Buffer' . status . mod)
       let name = '%{"' . buffer.name .'"}'
@@ -161,7 +176,7 @@ function! bufferline#render ()
 
       if s:is_picking_buffer == v:false
          let [icon, iconHl] = s:get_icon(buffer.name)
-         let iconPrefix = status is 'Inactive' ? namePrefix : s:hl(iconHl)
+         let iconPrefix = '' "status is 'Inactive' ? namePrefix : s:hl(iconHl)
          let icon = '%{"' . icon .' "}'
       else
          let letter = s:get_letter(buffer.number)
@@ -169,11 +184,14 @@ function! bufferline#render ()
          let icon = '%{"' . (!empty(letter) ? letter : ' ') .' "}'
       end
 
-      let result .=
-         \ signPrefix . sign .
-         \ iconPrefix . icon .
-         \ namePrefix . name .
-         \ s:SPACE
+      let result .= 
+               \ namePrefix . 
+               \ s:SPACE . 
+               \ iconPrefix .
+               \ icon . 
+               \ namePrefix . 
+               \ name .
+               \ s:SPACE
 
    endfor
 
@@ -217,7 +235,6 @@ endfu
 function! bufferline#pick_buffer()
    let s:is_picking_buffer = v:true
    call bufferline#update()
-   call s:shadow_open()
    redraw
    let s:is_picking_buffer = v:false
 
@@ -230,15 +247,14 @@ function! bufferline#pick_buffer()
       if has_key(s:buffer_by_letter, letter)
          let bufnr = s:buffer_by_letter[letter]
          execute 'buffer' bufnr
-      else
-         echohl WarningMsg
-         echom "Could't find buffer '" . letter . "'"
+      " else
+      "    echohl WarningMsg
+      "    echom "Could't find buffer '" . letter . "'"
       end
    end
 
    if !did_switch
       call bufferline#update()
-      call s:shadow_close()
       redraw
    end
 endfunc
@@ -256,10 +272,10 @@ function! s:on_buffer_open(abuf)
    end
    if &buftype == '' && &buflisted
       augroup BUFFER_MOD
-      au!
-      au BufWritePost <buffer> call <SID>check_modified()
-      au TextChanged  <buffer> call <SID>check_modified()
-      au TextChangedI <buffer> call <SID>check_modified()
+         au!
+         au BufWritePost <buffer> call <SID>check_modified()
+         au TextChanged  <buffer> call <SID>check_modified()
+         au TextChangedI <buffer> call <SID>check_modified()
       augroup END
    end
 endfunc
@@ -404,53 +420,17 @@ function! s:update_buffer_letters()
    endfor
 endfunc
 
-function! s:shadow_open()
-   if !g:bufferline.shadow
-      return
-   end
-   let opts =  {
-   \ 'relative': 'editor',
-   \ 'style': 'minimal',
-   \ 'width': &columns,
-   \ 'height': &lines - 2,
-   \ 'row': 2,
-   \ 'col': 0,
-   \ }
-   let s:shadow_winid = nvim_open_win(s:empty_bufnr, v:false, opts)
-   call setwinvar(s:shadow_winid, '&winhighlight', 'Normal:BufferShadow,NormalNC:BufferShadow,EndOfBuffer:BufferShadow')
-   call setwinvar(s:shadow_winid, '&winblend', 80)
-endfunc
-
-function! s:shadow_close()
-   if !g:bufferline.shadow
-      return
-   end
-   if s:shadow_winid != v:null && nvim_win_is_valid(s:shadow_winid)
-      call nvim_win_close(s:shadow_winid, v:true)
-   end
-   let s:shadow_winid = v:null
-endfunc
-
 " Helpers
-
-lua << END
-local web = require'nvim-web-devicons'
-function get_icon_wrapper(args)
-   local basename  = args[1]
-   local extension = args[2]
-   local icon, hl = web.get_icon(basename, extension, { default = true })
-   return { icon, hl }
-end
-END
 
 function! s:get_icon (buffer_name)
    let basename = fnamemodify(a:buffer_name, ':t')
    let extension = matchstr(basename, '\v\.@<=\w+$', '', '')
-   let [icon, hl] = luaeval("get_icon_wrapper(_A)", [basename, extension])
-   if icon == ''
-      let icon = g:lua_tree_icons.default
-   end
-   return [icon, hl]
+
+   if exists('*WebDevIconsGetFileTypeSymbol')
+      return [WebDevIconsGetFileTypeSymbol(basename), 'Tabline']
+   endif
+
+   return ['', 'Tabline']
 endfunc
 
 function! s:get_updated_buffers ()
@@ -461,7 +441,16 @@ function! s:get_updated_buffers ()
       let s:buffers = g:session.buffers
    end
 
-   let current_buffers = buf#filter('&buflisted')
+   let current_buffers = []
+   let dump = '' | redir=>dump
+   silent! exe ('ls!') | redir END
+
+   for line in split(dump, "\n")
+      call add(current_buffers , 0+matchstr(line, '\v\d+'))
+   endfor
+
+   call filter(current_buffers , 'getbufvar(v:val, "&buflisted")')
+
    let new_buffers =
       \ filter(
       \   copy(current_buffers),
